@@ -1,0 +1,213 @@
+---
+title: "MidtermDashboard"
+author: "Emmy Niswonger"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## US Board of Education Reading and Mathematics Proficiency Data
+** STA 309 Midterm Exam Assignment **
+
+# Directions/Goals
+* The U.S. Department of Education's mission is is to promote student achievement and preparation for global competitiveness by fostering educational excellence and ensuring equal access.
+* Use the material you have learned this class to build a dashboard studying the mathematics and/or reading proficiency scores for 2020-2021.  You have flexibility to specify the story in your dashboard.
+
+# Purpose 
+* The purpose of this midterm is to look closely at how various household conditions (poverty percentage per district and percentage with no internet access per district) has affected the average math proficiency rates statewide within the state districts. 
+* I will be using the Math Achievement Data from the United States Board of Education, and the NHGIS District Demographic Data from the NHGIS.
+
+** Data and R packages **
+```{r}
+library(tidyverse)
+library(dbplyr)
+library(ggplot2)
+library(patchwork)
+library(maps)
+library(ggthemes)
+library(readxl)
+library(maps)
+
+math_achievement <- read_csv("math-achievement-lea-sy2020-21 (1).csv")
+```
+
+**Filter average math proficiency percentages for valid entries. Group by the average proficiency per school district by State. Find the mean proficiency in each district.**
+```{r}
+math_per <- math_achievement %>% 
+  filter(CATEGORY == "ALL", GRADE == "00", NUMVALID > 1000) %>%
+  group_by(State = STNAM,
+           County = LEANM,
+           LEAID) %>%
+  mutate(PCTPROF = as.numeric(PCTPROF)) %>%
+summarise(Percent_Math_Proficiency = mean(PCTPROF, na.rm = TRUE))
+```
+
+**Group into a new data set that will be merged with the School District Data that includes the geospatial codes. Use str_to_lower to be able to properly merge the datasets.**
+```{r}
+math_scores <- math_per %>%
+  select(County,Percent_Math_Proficiency, State, LEAID) %>%
+  group_by(County,Percent_Math_Proficiency, LEAID)
+
+math_scores <- math_scores %>%
+  mutate(State = str_to_lower(State),
+         County = str_to_lower(County))
+
+math_scores <- math_scores %>%
+  mutate_at("County", str_replace, "county", "") 
+
+math_scores <- math_scores %>%
+  mutate_at("County", str_replace, "city", "")
+```
+
+**Perform a merge on the average percent math proficient and the school district data by using "LEAID" - the School District Code. Group by the average of each district.**
+```{r}
+School_District_Characteristics <- read_csv("School_District_Characteristics_2020-21.csv")
+
+math_district <- merge(math_scores, School_District_Characteristics, by=c("LEAID"))
+
+math_district <- math_district %>%
+  select(LEAID, Percent_Math_Proficiency, Lat, Long, State) %>%
+  group_by(LEAID, Lat, Long, State) %>%
+  summarise_at(vars(Percent_Math_Proficiency), list(Percent_Math_Proficiency = mean))
+```
+
+**Using merge() again, merge the states_map data from the map_data() package to be able to plot a chloropleth. Merge by "region" and "state".**
+```{r}
+states_map <- map_data("county")
+math_states <- merge(states_map, math_district)
+```
+
+```{r}
+min_math_scores <- math_district %>%
+  select(Lat, Long, Percent_Math_Proficiency, State) %>%
+  group_by(State) %>%
+  summarise(Min = min(Percent_Math_Proficiency))
+
+max_math_scores <- math_district %>%
+  select(Lat, Long, Percent_Math_Proficiency, State) %>%
+  group_by(State) %>%
+  summarise(Max = max(Percent_Math_Proficiency))
+
+min <- min_math_scores %>%
+  slice_min(Min, n=10)
+
+max <- max_math_scores %>%
+  slice_max(Max, n=10)
+
+```
+
+
+## Comparing US Board of Education Proficiency Data with demographic data about school districts 
+**Merge the NHGIS_District_data and the avg_proficiency_scores by state**
+```{r}
+School_District <- read_csv("School_District_Characteristics_2020-21.csv")
+
+NHGIS_District_data <- read_excel("NHGIS_District_data (2).xlsx")
+```
+
+## Comparing US Board of Education Proficiency Data with demographic data about school districts 
+```{r}
+NHGIS_District_data <- NHGIS_District_data %>%
+  mutate(State = as.factor(State)) %>%
+  mutate_at(vars("State"), ~tolower(.))
+```
+
+**Filter the NHGIS Data for poverty percentage and no internet percentage.**
+```{r}
+NHGIS_District_data <- NHGIS_District_data %>%
+  mutate(no_internet = as.numeric(`% No Computer or Internet Estimate`),
+         LEANM = as.factor(`Geographic School District`),
+         poverty_percentage = as.numeric(`% Poverty (SAIPE Estimate)`))
+```
+
+**Find the mean poverty percentage and the mean no_internet percentage statewide**
+```{r}
+internet_data <- NHGIS_District_data %>%
+  select(State, no_internet) %>%
+  group_by(State) %>%
+  summarise_at(vars(no_internet), list(no_internet = mean))
+
+
+poverty_data <- NHGIS_District_data %>%
+  select(State, poverty_percentage) %>%
+  group_by(State) %>%
+  summarise_at(vars(poverty_percentage), list(poverty_percentage = mean))
+```
+
+**Merge the poverty and no_internet data with the maps data.**
+```{r}
+states_map <- map_data("state")
+
+internet_state <- merge(states_map, internet_data, by.x="region", by.y="State")
+poverty_state <- merge(states_map, poverty_data, by.x="region", by.y="State")
+```
+
+
+**Create a chloropleth showing the average percentage of school district areas statewide without internet access**
+```{r}
+internet_plot <- ggplot(internet_state, aes(x=long, y=lat, group=group, fill=no_internet)) +
+  geom_polygon(color="white") + 
+  coord_map() + 
+  theme_map() +
+  scale_fill_gradient2(low="gray90", mid="forestgreen", high="yellow", 
+                       midpoint=0.1546605,limits=c(0,.27)) +
+  theme(legend.position="bottom") +
+  labs(title="Average Percentage of School District Population without Internet Access",
+       subtitle="Household Conditions by Geographic School District (mean % per state)", 
+       caption="Source: NHGIS District Data",
+       fill="Percentage of Population")
+```
+
+**Create a chloropleth showing the average percentage of school distric areas statewide living in poverty.**
+```{r}
+poverty_plot <- ggplot(poverty_state, aes(x=long, y=lat, group=group, fill=poverty_percentage)) +
+  geom_polygon(color="grey50") + 
+  coord_map() + 
+  theme_map() +
+  scale_fill_gradient2(low="grey90", mid="lavender", high="orange", 
+                       midpoint=0.1640276,limits=c(0,0.54)) +
+  theme(legend.position="bottom") +
+  labs(title="Average Percentage of School District Population living in Poverty",
+       subtitle="Household Conditions by Geographic School District (mean % per state)", 
+       caption="Source: NHGIS District Data",
+       fill="Percentage of Population")
+```
+
+
+**Now, to tie the demographic data back to the math proficiency data, merge both the internet data and the poverty data witg the highest math proficiency percentages by state.**
+```{r}
+internet_math <- merge(internet_data, max_math_scores)
+poverty_math <- merge(poverty_data, max_math_scores)
+```
+
+**Create a boxplot to show the distribution of high poverty percentages and math proficiency scores statewide.**
+```{r}
+boxplot_poverty <- boxplot(poverty_math$Max,
+main = "Mean Math Proficiency Score for High Poverty Areas Statewide",
+ylab = "Math Proficiency Percentage",
+col = "slateblue",
+border = "brown",
+horizontal = TRUE,
+notch = TRUE
+)
+```
+
+
+**Create a boxplot to show the distribution of percentage of areas with no/little internet access and math proficiency scores statewide.**
+```{r}
+boxplot_internet <- boxplot(internet_math$Max,
+main = "Mean Math Proficiency Score for Low Internet Areas Statewide",
+ylab = "Math Proficiency Percentage",
+col = "orange",
+border = "brown",
+horizontal = TRUE,
+notch = TRUE
+)
+```
+
+
+## Dashboard
+
+```{r}
+dashboard <- ggplot(poverty_state, aes(x=long, y=lat, group=group, fill=poverty_percentage)) + ggplot(internet_state, aes(x=long, y=lat, group=group, fill=no_internet)) 
+```
+
